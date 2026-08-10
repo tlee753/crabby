@@ -4,19 +4,19 @@ use std::{thread, time::Duration};
 use termion::color;
 
 struct Board {
-    tiles: [u8; 60],
-    start: [u8; 4],
-    finale: [[u8; 5]; 4],
+    tiles: [u32; 60],
+    start: [u32; 4],
+    finale: [[u32; 5]; 4],
 }
 
 struct Game {
     play_on: bool,
     repeat_turn: bool,
-    turn: u8,
-    roll: u8,
+    turn: u32,
+    roll: u32,
     round: u32,
     remaining: [u32; 4],
-    options: Vec<(u8, u8)>,
+    options: Vec<(u32, u32)>,
     board: Board,
 }
 
@@ -62,14 +62,14 @@ impl Game {
         // check finale
         for i in 0..4 {
             if self.board.finale[self.turn as usize][i] == 1 {
-                if i as u8 + self.roll == 4 {
+                if i as u32 + self.roll == 4 {
                     // move to finish
-                    self.options.push((200 + i as u8, 204))
-                } else if i as u8 + self.roll < 4 {
+                    self.options.push((1000 + i as u32, 204))
+                } else if i as u32 + self.roll < 4 {
                     if (self.board.finale[self.turn as usize][i + self.roll as usize]) != 1 {
                         // possible to move piece in finale forward
                         self.options
-                            .push((200 + i as u8, 200 + i as u8 + self.roll))
+                            .push((1000 + i as u32, 1000 + i as u32 + self.roll))
                     }
                 }
             }
@@ -85,22 +85,22 @@ impl Game {
                 let finale_entrance = [58, 13, 28, 43][self.turn as usize];
 
                 // dont pass finale_entrance
-                if i as u8 <= finale_entrance && i as u8 + self.roll >= finale_entrance {
+                if i as u32 <= finale_entrance && i as u32 + self.roll >= finale_entrance {
                     // println!("[DEBUG] Near finale entrance! Piece at {i}");
 
-                    if i as u8 + self.roll == finale_entrance + 5 {
+                    if i as u32 + self.roll == finale_entrance + 5 {
                         // straight to end
-                        self.options.push((i as u8, 204));
-                    } else if i as u8 + self.roll < finale_entrance + 4 {
+                        self.options.push((i as u32, 204));
+                    } else if i as u32 + self.roll < finale_entrance + 4 {
                         // check if empty tile in finale
                         let finale_tile = i + self.roll as usize - finale_entrance as usize;
                         // println!("[DEBUG] Can enter finale! Tile: {finale_tile}");
                         if self.board.finale[self.turn as usize][finale_tile] == 0 {
-                            self.options.push((i as u8, 200 + finale_tile as u8));
+                            self.options.push((i as u32, 1000 + finale_tile as u32));
                         }
                     }
                 } else if (self.board.tiles[i] + self.roll) % 60 != self.turn {
-                    self.options.push((i as u8, (i as u8 + self.roll) % 60))
+                    self.options.push((i as u32, (i as u32 + self.roll) % 60))
                 }
             }
         }
@@ -129,16 +129,16 @@ impl Game {
         total
     }
 
-    fn update_board(&mut self, option: (u8, u8)) {
-        if option.1 >= 200 {
+    fn update_board(&mut self, option: (u32, u32)) {
+        if option.1 >= 1000 {
             // move into finale
-            if option.0 >= 200 {
-                self.board.finale[self.turn as usize][option.0 as usize - 200] = 0;
+            if option.0 >= 1000 {
+                self.board.finale[self.turn as usize][option.0 as usize - 1000] = 0;
             } else {
                 self.board.tiles[option.0 as usize] = 8;
             }
-            self.board.finale[self.turn as usize][option.1 as usize - 200] += 1;
-        } else if option.0 >= 100 {
+            self.board.finale[self.turn as usize][option.1 as usize - 1000] += 1;
+        } else if option.0 == 101 {
             // move from start
             self.board.start[self.turn as usize] -= 1;
 
@@ -149,6 +149,11 @@ impl Game {
             }
 
             self.board.tiles[self.turn as usize * 15] = self.turn;
+        } else if option.0 >= 100 {
+            // piece swap
+            let swap_value: u32 = self.board.tiles[option.0 as usize - 100];
+            self.board.tiles[option.0 as usize - 100] = self.board.tiles[option.1 as usize];
+            self.board.tiles[option.1 as usize] = swap_value;
         } else {
             // move around the board
             self.board.tiles[option.0 as usize] = 8;
@@ -166,7 +171,7 @@ impl Game {
     fn print_board(&mut self) {
         print!("[{}]    [", self.board.start[self.turn as usize]);
 
-        let mut i: u8 = 0;
+        let mut i: u32 = 0;
         for tile in self.board.tiles {
             if i % 15 == 0 {
                 print!(" ")
@@ -228,7 +233,15 @@ impl Game {
                     self.push_backward_moves();
                 }
                 7 => {
-                    // list car swaps
+                    for i in 0..60 {
+                        if self.board.tiles[i] == self.turn {
+                            for j in 0..60 {
+                                if self.board.tiles[j] != 8 && self.board.tiles[j] != self.turn {
+                                    self.options.push((100 + i as u32, j as u32));
+                                }
+                            }
+                        }
+                    }
                 }
                 8 => {
                     // split move
@@ -237,10 +250,11 @@ impl Game {
                     self.push_backward_moves();
                 }
                 11 => {
-                    // check backward 1
+                    self.push_backward_moves();
                 }
                 13 => {
                     // pinch
+                    if self.board.start[self.turn as usize] > 0 {}
                 }
                 _ => println!("[ERROR] Roll out of valid range!"),
             }
