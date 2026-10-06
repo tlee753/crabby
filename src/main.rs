@@ -2,7 +2,7 @@ use iced::alignment;
 use iced::font::Family;
 use iced::mouse::Cursor;
 use iced::widget::canvas::{Canvas, Frame, Geometry, Path, Program, Stroke, Text};
-use iced::widget::{button, column, container, row, text as text_widget};
+use iced::widget::{Column, Row, button, column, container, text as text_widget};
 use iced::{
     Background, Color, Element, Font, Length, Point, Rectangle, Renderer, Size, Task, Theme, window,
 };
@@ -224,6 +224,7 @@ impl App {
         button(content)
             .on_press(msg)
             .padding(12)
+            .width(Length::Fill)
             .style(move |_theme, status| {
                 let bg = match status {
                     button::Status::Hovered => Color { a: 0.85, ..p_color },
@@ -252,60 +253,71 @@ impl App {
             _ => "Blue",
         };
 
-        let status_text = if let Some(winner) = self.game.winner {
+        // Sidebar Content
+        let round_text = text_widget(format!("Round {}", self.game.round))
+            .size(24)
+            .font(LEXEND)
+            .color(Color::WHITE);
+
+        let turn_text = text_widget(if let Some(winner) = self.game.winner {
             format!("Winner: Player {}!", winner)
         } else {
-            format!(
-                "Round {} | Player Turn: {} ({}) | Dice Roll: {}",
-                self.game.round, self.game.turn, p_name, self.game.roll
-            )
-        };
+            format!("Turn: Player {} ({})", self.game.turn, p_name)
+        })
+        .size(22)
+        .font(LEXEND)
+        .color(p_color);
 
-        let mut options_row = row![].spacing(10);
+        let dice_text = text_widget(format!("Dice Roll: {}", self.game.roll))
+            .size(20)
+            .font(LEXEND)
+            .color(Color::WHITE);
+
+        let mut options_column = Column::new().spacing(10);
         if self.game.options.is_empty() {
-            options_row = options_row.push(self.player_button(
+            options_column = options_column.push(self.player_button(
                 text_widget("No Valid Moves - Pass").font(LEXEND),
                 Message::PassTurn,
             ));
         } else {
             for &opt in &self.game.options {
                 let label = match (opt.0, opt.1) {
-                    (101, to) => format!("Enter from Start -> Tile {}", to),
+                    (101, to) => format!("Enter Start -> Tile {}", to),
                     (from, to) if to >= 204 => format!("Tile {} -> ENDZONE", from),
-                    (from, to) if to >= 200 => format!("Tile {} -> Finale {}", from, to - 200 + 1),
+                    (from, to) if to >= 200 => format!("Tile {} -> Finale {}", from, to - 200),
                     (from, to) => format!("Tile {} -> Tile {}", from, to),
                 };
-                options_row = options_row.push(
+                options_column = options_column.push(
                     self.player_button(text_widget(label).font(LEXEND), Message::SelectMove(opt)),
                 );
             }
         }
 
-        container(
-            column![
-                container(
-                    text_widget(status_text)
-                        .size(28)
-                        .color(p_color)
-                        .font(LEXEND)
-                )
-                .padding(15),
-                Canvas::new(BoardCanvas {
-                    board: self.game.board
-                })
-                .width(Length::Fill)
-                .height(Length::Fill),
-                container(options_row).padding(15).center_x(Length::Fill)
-            ]
-            .align_x(alignment::Horizontal::Center),
+        let sidebar = container(
+            column![round_text, turn_text, dice_text, options_column]
+                .spacing(20)
+                .width(Length::Fixed(280.0)),
         )
-        .width(Length::Fill)
+        .padding(20)
+        .width(Length::Fixed(320.0))
         .height(Length::Fill)
         .style(|_| container::Style {
-            background: Some(Background::Color(Color::BLACK)),
+            background: Some(Background::Color(Color::from_rgb(0.12, 0.12, 0.14))),
             ..Default::default()
+        });
+
+        let canvas_widget = Canvas::new(BoardCanvas {
+            board: self.game.board,
         })
-        .into()
+        .width(Length::Fill)
+        .height(Length::Fill);
+
+        Row::new()
+            .push(sidebar)
+            .push(canvas_widget)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
     }
 }
 
@@ -451,7 +463,7 @@ impl Program<Message> for BoardCanvas {
                 _ => (0.0, 0.0),
             };
 
-            // Draw 4 distinct entry lane steps
+            // Draw 4 distinct entry lane steps (Finale 0..3)
             for step in 1..5 {
                 let fx = start_pt.x + dx * (step as f32) * cell_size;
                 let fy = start_pt.y + dy * (step as f32) * cell_size;
@@ -465,6 +477,19 @@ impl Program<Message> for BoardCanvas {
                 );
 
                 let spot_idx = step - 1;
+
+                // Render "0", "1", "2", "3" labels inside finale tiles
+                frame.fill_text(Text {
+                    content: spot_idx.to_string(),
+                    position: Point::new(tile_pt.x + cell_size / 2.0, tile_pt.y + cell_size / 2.0),
+                    color: Color { a: 0.6, ..p_color },
+                    size: (cell_size * 0.35).into(),
+                    font: LEXEND,
+                    align_x: alignment::Horizontal::Center.into(),
+                    align_y: alignment::Vertical::Center,
+                    ..Default::default()
+                });
+
                 if self.board.finale[player_idx][spot_idx] == 1 {
                     let piece = Path::circle(
                         Point::new(tile_pt.x + cell_size / 2.0, tile_pt.y + cell_size / 2.0),
