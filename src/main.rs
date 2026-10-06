@@ -3,7 +3,9 @@ use iced::font::Family;
 use iced::mouse::Cursor;
 use iced::widget::canvas::{Canvas, Frame, Geometry, Path, Program, Stroke, Text};
 use iced::widget::{button, column, container, row, text as text_widget};
-use iced::{Color, Element, Font, Length, Point, Rectangle, Renderer, Size, Task, Theme, window};
+use iced::{
+    Background, Color, Element, Font, Length, Point, Rectangle, Renderer, Size, Task, Theme, window,
+};
 use rand::Rng;
 
 const LEXEND: Font = Font {
@@ -206,6 +208,36 @@ impl App {
         Task::none()
     }
 
+    fn player_button<'a>(&self, content: impl Into<Element<'a, Message>>, msg: Message) -> Element<'a, Message> {
+        let p_color = PLAYER_COLORS[self.game.turn as usize];
+        button(content)
+            .on_press(msg)
+            .padding(12)
+            .style(move |_theme, status| {
+                let bg = match status {
+                    button::Status::Hovered => Color {
+                        a: 0.85,
+                        ..p_color
+                    },
+                    button::Status::Pressed => Color {
+                        a: 0.70,
+                        ..p_color
+                    },
+                    _ => p_color,
+                };
+                button::Style {
+                    background: Some(Background::Color(bg)),
+                    text_color: Color::BLACK,
+                    border: iced::Border {
+                        radius: 6.0.into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }
+            })
+            .into()
+    }
+
     fn view(&self) -> Element<'_, Message> {
         let p_color = PLAYER_COLORS[self.game.turn as usize];
         let p_name = match self.game.turn {
@@ -227,11 +259,10 @@ impl App {
         // Render option buttons for available moves
         let mut options_row = row![].spacing(10);
         if self.game.options.is_empty() {
-            options_row = options_row.push(
-                button("No Valid Moves - Pass")
-                    .on_press(Message::PassTurn)
-                    .padding(10),
-            );
+            options_row = options_row.push(self.player_button(
+                text_widget("No Valid Moves - Pass").font(LEXEND),
+                Message::PassTurn,
+            ));
         } else {
             for &opt in &self.game.options {
                 let label = match (opt.0, opt.1) {
@@ -240,30 +271,37 @@ impl App {
                     (from, to) if to >= 200 => format!("Tile {} -> Finale {}", from, to - 200 + 1),
                     (from, to) => format!("Tile {} -> Tile {}", from, to),
                 };
-                options_row = options_row.push(
-                    button(text_widget(label).font(LEXEND))
-                        .on_press(Message::SelectMove(opt))
-                        .padding(10),
-                );
+                options_row = options_row.push(self.player_button(
+                    text_widget(label).font(LEXEND),
+                    Message::SelectMove(opt),
+                ));
             }
         }
 
-        column![
-            container(
-                text_widget(status_text)
-                    .size(28)
-                    .color(p_color)
-                    .font(LEXEND)
-            )
-            .padding(15),
-            Canvas::new(BoardCanvas {
-                board: self.game.board
-            })
-            .width(Length::Fill)
-            .height(Length::Fill),
-            container(options_row).padding(15).center_x(Length::Fill)
-        ]
-        .align_x(alignment::Horizontal::Center)
+        container(
+            column![
+                container(
+                    text_widget(status_text)
+                        .size(28)
+                        .color(p_color)
+                        .font(LEXEND)
+                )
+                .padding(15),
+                Canvas::new(BoardCanvas {
+                    board: self.game.board
+                })
+                .width(Length::Fill)
+                .height(Length::Fill),
+                container(options_row).padding(15).center_x(Length::Fill)
+            ]
+            .align_x(alignment::Horizontal::Center),
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .style(|_| container::Style {
+            background: Some(Background::Color(Color::BLACK)),
+            ..Default::default()
+        })
         .into()
     }
 }
@@ -292,9 +330,9 @@ impl Program<Message> for BoardCanvas {
         let grid_steps = 16.0;
         let cell_size = size / grid_steps;
 
-        let bg_color = Color::from_rgb8(20, 24, 30);
-        let tile_bg = Color::from_rgb8(35, 42, 52);
-        let border_color = Color::from_rgb8(70, 80, 95);
+        let bg_color = Color::BLACK;
+        let tile_bg = Color::from_rgb8(30, 30, 35);
+        let border_color = Color::from_rgb8(70, 70, 80);
 
         // Frame background
         let bg = Path::rectangle(Point::ORIGIN, bounds.size());
@@ -370,8 +408,10 @@ impl Program<Message> for BoardCanvas {
                 let tile_pt = Point::new(fx, fy);
                 let finale_rect = Path::rectangle(tile_pt, Size::new(cell_size, cell_size));
 
-                let mut fill_color = p_color;
-                fill_color.a = if step == 5 { 0.5 } else { 0.2 };
+                let fill_color = Color {
+                    a: if step == 5 { 0.5 } else { 0.2 },
+                    ..p_color
+                };
 
                 frame.fill(&finale_rect, fill_color);
                 frame.stroke(
