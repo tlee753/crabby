@@ -1,296 +1,398 @@
+use iced::alignment;
+use iced::font::Family;
+use iced::mouse::Cursor;
+use iced::widget::canvas::{Canvas, Frame, Geometry, Path, Program, Stroke, Text};
+use iced::widget::{button, column, container, row, text as text_widget};
+use iced::{Color, Element, Font, Length, Point, Rectangle, Renderer, Size, Task, Theme, window};
 use rand::Rng;
-use std::usize;
-use std::{thread, time::Duration};
-use termion::color;
 
+const LEXEND: Font = Font {
+    family: Family::Name("Lexend"),
+    ..Font::DEFAULT
+};
+
+const PLAYER_COLORS: [Color; 4] = [
+    Color::from_rgb(0.9, 0.3, 0.3),  // Red (Player 0)
+    Color::from_rgb(0.95, 0.8, 0.2), // Yellow (Player 1)
+    Color::from_rgb(0.3, 0.8, 0.3),  // Green (Player 2)
+    Color::from_rgb(0.3, 0.6, 0.9),  // Blue (Player 3)
+];
+
+const ENTRANCES: [usize; 4] = [58, 13, 28, 43];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Board {
-    tiles: [u8; 60],
-    start: [u8; 4],
-    finale: [[u8; 5]; 4],
+    tiles: [u8; 60],      // 8 = Empty, 0..3 = Player car
+    start: [u8; 4],       // Remaining cars in start yard per player
+    finale: [[u8; 5]; 4], // 0 = Empty, 1..4 = Pieces in endzone spots
 }
 
-struct Game {
-    play_on: bool,
-    repeat_turn: bool,
+impl Default for Board {
+    fn default() -> Self {
+        Self {
+            tiles: [8; 60],
+            start: [4; 4],
+            finale: [[0; 5]; 4],
+        }
+    }
+}
+
+struct GameState {
+    board: Board,
     turn: u8,
     roll: u8,
     round: u32,
-    remaining: [u32; 4],
-    options: Vec<(u8, u8)>,
-    board: Board,
+    winner: Option<u8>,
+    options: Vec<(u8, u8)>, // (From, To)
 }
 
-impl Game {
-    fn set_print_color(&mut self) {
-        match self.turn {
-            0 => print!("{}", color::Fg(color::LightRed)),
-            1 => print!("{}", color::Fg(color::Yellow)),
-            2 => print!("{}", color::Fg(color::LightGreen)),
-            3 => print!("{}", color::Fg(color::LightBlue)),
-            _ => print!("[ERROR] Invalid value for turn!"),
+impl GameState {
+    fn new() -> Self {
+        let mut game = Self {
+            board: Board::default(),
+            turn: 0,
+            roll: 0,
+            round: 1,
+            winner: None,
+            options: Vec::new(),
+        };
+        game.roll_dice();
+        game
+    }
+
+    fn roll_dice(&mut self) {
+        let mut rng = rand::rng();
+        self.roll = rng.random_range(1..=13);
+        self.generate_options();
+    }
+
+    fn generate_options(&mut self) {
+        self.options.clear();
+        if self.winner.is_some() {
+            return;
+        }
+
+        // Start yard options (Roll 1 or 12)
+        if matches!(self.roll, 1 | 12) {
+            let start_idx = (self.turn * 15) as usize;
+            if self.board.start[self.turn as usize] > 0 && self.board.tiles[start_idx] != self.turn
+            {
+                self.options.push((101, start_idx as u8));
+            }
+        }
+
+        // Forward moves
+        if self.roll != 13 {
+            // 13 = Pinch
+            // 1. Move inside finale
+            for i in 0..4 {
+                if self.board.finale[self.turn as usize][i] == 1 {
+                    let target = i as u8 + self.roll;
+                    if target == 4 {
+                        self.options.push((200 + i as u8, 204));
+                    } else if target < 4
+                        && self.board.finale[self.turn as usize][target as usize] == 0
+                    {
+                        self.options.push((200 + i as u8, 200 + target));
+                    }
+                }
+            }
+
+            // 2. Move along board tiles
+            let entrance = ENTRANCES[self.turn as usize] as u8;
+            for i in 0..60 {
+                if self.board.tiles[i] == self.turn {
+                    let pos = i as u8;
+                    // Entering finale check
+                    if pos <= entrance && pos + self.roll >= entrance {
+                        if pos + self.roll == entrance + 5 {
+                            self.options.push((pos, 204));
+                        } else if pos + self.roll < entrance + 4 {
+                            let finale_tile = (pos + self.roll - entrance) as usize;
+                            if self.board.finale[self.turn as usize][finale_tile] == 0 {
+                                self.options.push((pos, 200 + finale_tile as u8));
+                            }
+                        }
+                    } else if (self.board.tiles[i] + self.roll) % 60 != self.turn {
+                        self.options.push((pos, (pos + self.roll) % 60));
+                    }
+                }
+            }
         }
     }
 
-    fn set_print_color_option(&mut self, i: usize) {
-        match i {
-            0 => print!("{}", color::Fg(color::LightRed)),
-            1 => print!("{}", color::Fg(color::Yellow)),
-            2 => print!("{}", color::Fg(color::LightGreen)),
-            3 => print!("{}", color::Fg(color::LightBlue)),
-            _ => println!("[ERROR] Invalid value for turn!"),
+    fn execute_move(&mut self, option: (u8, u8)) {
+        let (from, to) = option;
+
+        // Reset source location
+        if from >= 200 {
+            self.board.finale[self.turn as usize][from as usize - 200] = 0;
+        } else if from >= 100 {
+            self.board.start[self.turn as usize] -= 1;
+        } else {
+            self.board.tiles[from as usize] = 8;
         }
+
+        // Place on destination
+        if to >= 200 {
+            self.board.finale[self.turn as usize][to as usize - 200] += 1;
+        } else {
+            let occupied = self.board.tiles[to as usize];
+            if occupied != 8 {
+                // Bump existing car back to start
+                self.board.start[occupied as usize] += 1;
+            }
+            self.board.tiles[to as usize] = self.turn;
+        }
+
+        self.check_winner();
+
+        // Advance Turn (Repeat turn on 3)
+        if self.roll != 3 {
+            self.turn = (self.turn + 1) % 4;
+        }
+        self.round += 1;
+        self.roll_dice();
     }
 
     fn check_winner(&mut self) {
         for i in 0..4 {
             if self.board.finale[i][4] >= 4 {
-                self.play_on = false;
-                println!("\n=================");
-                println!("The winner is {}!", i);
-                println!("=================\n");
+                self.winner = Some(i as u8);
                 break;
             }
         }
     }
+}
 
-    fn push_forward_moves(&mut self) {
-        // check for pinch
-        if self.roll == 13 {
-            return;
-        }
+#[derive(Debug, Clone)]
+enum Message {
+    SelectMove((u8, u8)),
+    PassTurn,
+}
 
-        // check finale
-        for i in 0..4 {
-            if self.board.finale[self.turn as usize][i] == 1 {
-                if i as u8 + self.roll == 4 {
-                    // move to finish
-                    self.options.push((200 + i as u8, 204))
-                } else if i as u8 + self.roll < 4 {
-                    if (self.board.finale[self.turn as usize][i + self.roll as usize]) != 1 {
-                        // possible to move piece in finale forward
-                        self.options
-                            .push((200 + i as u8, 200 + i as u8 + self.roll))
-                    }
-                }
-            }
-        }
+struct App {
+    game: GameState,
+}
 
-        // check tiles
-        for i in 0..60 {
-            // make sure its your piece
-            if self.board.tiles[i] == self.turn {
-                // println!("[DEBUG] Found piece on tile: {}", i);
+pub fn main() -> iced::Result {
+    iced::application(App::boot, App::update, App::view)
+        .title("Bump 'Em Board Game")
+        .window(window::Settings {
+            maximized: true,
+            ..Default::default()
+        })
+        .run()
+}
 
-                // check if near finale
-                let finale_entrance = [58, 13, 28, 43][self.turn as usize];
-
-                // dont pass finale_entrance
-                if i as u8 <= finale_entrance && i as u8 + self.roll >= finale_entrance {
-                    // println!("[DEBUG] Near finale entrance! Piece at {i}");
-
-                    if i as u8 + self.roll == finale_entrance + 5 {
-                        // straight to end
-                        self.options.push((i as u8, 204));
-                    } else if i as u8 + self.roll < finale_entrance + 4 {
-                        // check if empty tile in finale
-                        let finale_tile = i + self.roll as usize - finale_entrance as usize;
-                        // println!("[DEBUG] Can enter finale! Tile: {finale_tile}");
-                        if self.board.finale[self.turn as usize][finale_tile] == 0 {
-                            self.options.push((i as u8, 200 + finale_tile as u8));
-                        }
-                    }
-                } else if (self.board.tiles[i] + self.roll) % 60 != self.turn {
-                    self.options.push((i as u8, (i as u8 + self.roll) % 60))
-                }
-            }
+impl App {
+    fn boot() -> Self {
+        Self {
+            game: GameState::new(),
         }
     }
 
-    fn push_backward_moves(&mut self) {}
-
-    fn calculate_remaining_distance(&mut self) -> u32 {
-        let mut total: u32 = 0;
-        let finale_entrance = [58, 13, 28, 43][self.turn as usize];
-
-        total += self.board.start[self.turn as usize] as u32 * 100;
-
-        for i in 0..60 {
-            if self.board.tiles[i] == self.turn {
-                total += ((finale_entrance + 60 - i as u32) % 60) + 5
+    fn update(&mut self, message: Message) -> Task<Message> {
+        match message {
+            Message::SelectMove(option) => {
+                self.game.execute_move(option);
+            }
+            Message::PassTurn => {
+                self.game.turn = (self.game.turn + 1) % 4;
+                self.game.round += 1;
+                self.game.roll_dice();
             }
         }
-
-        for i in 0..4 {
-            if self.board.finale[self.turn as usize][i] == 1 {
-                total += 4 - i as u32;
-            }
-        }
-
-        total
+        Task::none()
     }
 
-    fn update_board(&mut self, option: (u8, u8)) {
-        if option.1 >= 200 {
-            // move into finale
-            if option.0 >= 200 {
-                self.board.finale[self.turn as usize][option.0 as usize - 200] = 0;
-            } else {
-                self.board.tiles[option.0 as usize] = 8;
-            }
-            self.board.finale[self.turn as usize][option.1 as usize - 200] += 1;
-        } else if option.0 >= 100 {
-            // move from start
-            self.board.start[self.turn as usize] -= 1;
+    fn view(&self) -> Element<'_, Message> {
+        let p_color = PLAYER_COLORS[self.game.turn as usize];
+        let p_name = match self.game.turn {
+            0 => "Red",
+            1 => "Yellow",
+            2 => "Green",
+            _ => "Blue",
+        };
 
-            let future_tile = self.board.tiles[option.1 as usize];
-            if future_tile != 8 {
-                // theres a car there on that spot!
-                self.board.start[future_tile as usize] += 1;
-            }
-
-            self.board.tiles[self.turn as usize * 15] = self.turn;
+        let status_text = if let Some(winner) = self.game.winner {
+            format!("Winner: Player {}!", winner)
         } else {
-            // move around the board
-            self.board.tiles[option.0 as usize] = 8;
+            format!(
+                "Round {} | Player Turn: {} ({}) | Dice Roll: {}",
+                self.game.round, self.game.turn, p_name, self.game.roll
+            )
+        };
 
-            let future_tile = self.board.tiles[option.1 as usize];
-            if future_tile != 8 {
-                // theres a car there on that spot!
-                self.board.start[future_tile as usize] += 1;
-            }
-
-            self.board.tiles[option.1 as usize] = self.turn;
-        }
-    }
-
-    fn print_board(&mut self) {
-        print!("[{}]    [", self.board.start[self.turn as usize]);
-
-        let mut i: u8 = 0;
-        for tile in self.board.tiles {
-            if i % 15 == 0 {
-                print!(" ")
-            }
-
-            if tile == 8 {
-                print!("-")
-            } else {
-                self.set_print_color_option(tile as usize);
-                print!("{tile}");
-                self.set_print_color();
-            }
-
-            i += 1;
-        }
-        self.set_print_color();
-        print!(" ]    [ ");
-        for tile in self.board.finale[self.turn as usize] {
-            if tile == 0 {
-                print!("-")
-            } else {
-                print!("{tile}")
-            }
-        }
-        println!(" ]");
-    }
-
-    fn game_loop(&mut self) {
-        let mut rng = rand::rng();
-
-        while self.play_on {
-            self.set_print_color();
-            self.options.clear();
-
-            self.roll = rng.random_range(1..=13);
-            println!(
-                "Round {} | Turn {} | Roll {} | Remaining {} ",
-                self.round, self.turn, self.roll, self.remaining[self.turn as usize]
+        // Render option buttons for available moves
+        let mut options_row = row![].spacing(10);
+        if self.game.options.is_empty() {
+            options_row = options_row.push(
+                button("No Valid Moves - Pass")
+                    .on_press(Message::PassTurn)
+                    .padding(10),
             );
-
-            self.push_forward_moves();
-
-            match self.roll {
-                1 | 12 => {
-                    if self.board.start[self.turn as usize] > 0
-                        && self.board.tiles[(self.turn * 15) as usize] != self.turn
-                    {
-                        // possible to move to start
-                        self.options.push((101, self.turn * 15));
-                    }
-                }
-                2 | 4 | 5 | 10 => {
-                    // only move forward options
-                }
-                3 => {
-                    self.repeat_turn = true;
-                }
-                6 => {
-                    self.push_backward_moves();
-                }
-                7 => {
-                    // list car swaps
-                }
-                8 => {
-                    // split move
-                }
-                9 => {
-                    self.push_backward_moves();
-                }
-                11 => {
-                    // check backward 1
-                }
-                13 => {
-                    // pinch
-                }
-                _ => println!("[ERROR] Roll out of valid range!"),
+        } else {
+            for &opt in &self.game.options {
+                let label = match (opt.0, opt.1) {
+                    (101, to) => format!("Enter from Start -> Tile {}", to),
+                    (from, 204) => format!("Tile {} -> FINISH", from),
+                    (from, to) if to >= 200 => format!("Tile {} -> Finale {}", from, to - 200 + 1),
+                    (from, to) => format!("Tile {} -> Tile {}", from, to),
+                };
+                options_row = options_row.push(
+                    button(text_widget(label).font(LEXEND))
+                        .on_press(Message::SelectMove(opt))
+                        .padding(10),
+                );
             }
-
-            self.remaining[self.turn as usize] = self.calculate_remaining_distance();
-            self.print_board();
-            for option in self.options.clone() {
-                println!("- Option: ({}, {})", option.0, option.1)
-            }
-
-            // only one option :D
-            if self.options.len() == 1 {
-                self.update_board(self.options.clone().pop().expect("[ERROR] nothing to pop!"));
-            } else if self.options.len() > 1 {
-                // just take the last one for now, debugging mode
-                self.update_board(self.options.clone().pop().expect("[ERROR] nothing to pop!"));
-
-                // if user, ask
-
-                // if ai, then calculate remaining distance for each option and pick one
-            }
-
-            self.check_winner();
-
-            if !self.repeat_turn {
-                self.turn = (self.turn + 1) % 4;
-            }
-            self.repeat_turn = false;
-
-            self.round += 1;
-            thread::sleep(Duration::from_secs(0));
         }
+
+        column![
+            container(
+                text_widget(status_text)
+                    .size(28)
+                    .color(p_color)
+                    .font(LEXEND)
+            )
+            .padding(15),
+            Canvas::new(BoardCanvas {
+                board: self.game.board
+            })
+            .width(Length::Fill)
+            .height(Length::Fill),
+            container(options_row).padding(15).center_x(Length::Fill)
+        ]
+        .align_x(alignment::Horizontal::Center)
+        .into()
     }
 }
 
-fn main() {
-    let mut game: Game = Game {
-        play_on: true,
-        repeat_turn: false,
-        turn: 0,
-        roll: 0,
-        round: 0,
-        remaining: [0; 4],
-        options: Vec::new(),
-        board: Board {
-            tiles: [8; 60],
-            start: [4; 4],
-            finale: [[0; 5]; 4],
-        },
-    };
+struct BoardCanvas {
+    board: Board,
+}
 
-    game.game_loop();
+impl Program<Message> for BoardCanvas {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: Cursor,
+    ) -> Vec<Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+
+        let size = bounds.width.min(bounds.height) * 0.90;
+        let start_x = (bounds.width - size) / 2.0;
+        let start_y = (bounds.height - size) / 2.0;
+
+        let grid_steps = 16.0;
+        let cell_size = size / grid_steps;
+
+        let bg_color = Color::from_rgb8(20, 24, 30);
+        let tile_bg = Color::from_rgb8(35, 42, 52);
+        let border_color = Color::from_rgb8(70, 80, 95);
+
+        // Frame background
+        let bg = Path::rectangle(Point::ORIGIN, bounds.size());
+        frame.fill(&bg, bg_color);
+
+        // Generate coordinates for outer 60 perimeter track tiles
+        let mut track_points = Vec::with_capacity(60);
+        for i in 0..15 {
+            track_points.push(Point::new(start_x + (i as f32) * cell_size, start_y));
+        }
+        for i in 0..15 {
+            track_points.push(Point::new(
+                start_x + 15.0 * cell_size,
+                start_y + (i as f32) * cell_size,
+            ));
+        }
+        for i in 0..15 {
+            track_points.push(Point::new(
+                start_x + (15.0 - i as f32) * cell_size,
+                start_y + 15.0 * cell_size,
+            ));
+        }
+        for i in 0..15 {
+            track_points.push(Point::new(start_x, start_y + (15.0 - i as f32) * cell_size));
+        }
+
+        // Draw 60 main perimeter tiles
+        for (idx, pt) in track_points.iter().enumerate() {
+            let tile_rect = Path::rectangle(*pt, Size::new(cell_size, cell_size));
+            frame.fill(&tile_rect, tile_bg);
+            frame.stroke(
+                &tile_rect,
+                Stroke::default().with_color(border_color).with_width(1.5),
+            );
+
+            // Render active car on tile if present
+            let occupancy = self.board.tiles[idx];
+            if occupancy < 4 {
+                let car = Path::circle(
+                    Point::new(pt.x + cell_size / 2.0, pt.y + cell_size / 2.0),
+                    cell_size * 0.35,
+                );
+                frame.fill(&car, PLAYER_COLORS[occupancy as usize]);
+            } else {
+                frame.fill_text(Text {
+                    content: idx.to_string(),
+                    position: Point::new(pt.x + cell_size / 2.0, pt.y + cell_size / 2.0),
+                    color: Color::from_rgb(0.5, 0.5, 0.5),
+                    size: (cell_size * 0.3).into(),
+                    align_x: alignment::Horizontal::Center.into(),
+                    align_y: alignment::Vertical::Center,
+                    ..Default::default()
+                });
+            }
+        }
+
+        // Render Endzones & Finale Paths
+        for (player_idx, &entrance) in ENTRANCES.iter().enumerate() {
+            let p_color = PLAYER_COLORS[player_idx];
+            let start_pt = track_points[entrance];
+
+            let (dx, dy) = match player_idx {
+                0 => (1.0, 0.0),  // Red (Entrance 58): moves right
+                1 => (0.0, 1.0),  // Yellow (Entrance 13): moves down
+                2 => (-1.0, 0.0), // Green (Entrance 28): moves left
+                3 => (0.0, -1.0), // Blue (Entrance 43): moves up
+                _ => (0.0, 0.0),
+            };
+
+            for step in 1..=5 {
+                let fx = start_pt.x + dx * (step as f32) * cell_size;
+                let fy = start_pt.y + dy * (step as f32) * cell_size;
+                let tile_pt = Point::new(fx, fy);
+                let finale_rect = Path::rectangle(tile_pt, Size::new(cell_size, cell_size));
+
+                let mut fill_color = p_color;
+                fill_color.a = if step == 5 { 0.5 } else { 0.2 };
+
+                frame.fill(&finale_rect, fill_color);
+                frame.stroke(
+                    &finale_rect,
+                    Stroke::default().with_color(p_color).with_width(2.0),
+                );
+
+                // Check if piece is in this endzone slot
+                if step <= 5 {
+                    let spot_idx = step - 1;
+                    if self.board.finale[player_idx][spot_idx] > 0 {
+                        let piece = Path::circle(
+                            Point::new(tile_pt.x + cell_size / 2.0, tile_pt.y + cell_size / 2.0),
+                            cell_size * 0.35,
+                        );
+                        frame.fill(&piece, p_color);
+                    }
+                }
+            }
+        }
+
+        vec![frame.into_geometry()]
+    }
 }
