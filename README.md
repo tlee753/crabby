@@ -8,7 +8,7 @@
 ### Todo
 - [ ] Finish the roll logic (pinches, reverses, swaps, move splits)
 - [ ] Finish the board logic (slicks, turbos)
-- [ ] Add a basic AI that just chooses the first option
+- [x] Add a basic AI that just chooses the first option
 - [ ] Add an intermediate AI that calculates the total distance left for all of its pieces for each option and chooses the min distance for itself
 - [ ] Add an expert AI that also factors in oponents positions/total distance remaining
 

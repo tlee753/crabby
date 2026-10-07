@@ -7,6 +7,7 @@ use iced::{
     Background, Color, Element, Font, Length, Point, Rectangle, Renderer, Size, Task, Theme, window,
 };
 use rand::Rng;
+use std::time::Duration;
 
 const LEXEND: Font = Font {
     family: Family::Name("Lexend"),
@@ -47,6 +48,7 @@ struct GameState {
     round: u32,
     winner: Option<u8>,
     options: Vec<(u8, u8)>, // (From, To)
+    is_ai: [bool; 4],       // Red = Human (false), Yellow/Green/Blue = AI (true)
 }
 
 impl GameState {
@@ -58,9 +60,14 @@ impl GameState {
             round: 1,
             winner: None,
             options: Vec::new(),
+            is_ai: [false, true, true, true], // Player 0 (Red) = Human; 1..3 = AI
         };
         game.roll_dice();
         game
+    }
+
+    fn current_is_ai(&self) -> bool {
+        self.winner.is_none() && self.is_ai[self.turn as usize]
     }
 
     fn roll_dice(&mut self) {
@@ -164,6 +171,24 @@ impl GameState {
         self.roll_dice();
     }
 
+    fn pass_turn(&mut self) {
+        self.turn = (self.turn + 1) % 4;
+        self.round += 1;
+        self.roll_dice();
+    }
+
+    fn step_ai(&mut self) {
+        if !self.current_is_ai() {
+            return;
+        }
+
+        if let Some(&first_option) = self.options.first() {
+            self.execute_move(first_option);
+        } else {
+            self.pass_turn();
+        }
+    }
+
     fn check_winner(&mut self) {
         for i in 0..4 {
             if self.board.finale[i][4..8].iter().all(|&spot| spot == 1) {
@@ -178,6 +203,7 @@ impl GameState {
 enum Message {
     SelectMove((u8, u8)),
     PassTurn,
+    TickAi,
 }
 
 struct App {
@@ -195,24 +221,46 @@ pub fn main() -> iced::Result {
 }
 
 impl App {
-    fn boot() -> Self {
-        Self {
+    fn boot() -> (Self, Task<Message>) {
+        let app = Self {
             game: GameState::new(),
+        };
+        let task = app.check_ai_step();
+        (app, task)
+    }
+
+    fn check_ai_step(&self) -> Task<Message> {
+        if self.game.current_is_ai() {
+            Task::perform(
+                async {
+                    std::thread::sleep(Duration::from_millis(300));
+                },
+                |_| Message::TickAi,
+            )
+        } else {
+            Task::none()
         }
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::SelectMove(option) => {
-                self.game.execute_move(option);
+                if !self.game.current_is_ai() {
+                    self.game.execute_move(option);
+                }
             }
             Message::PassTurn => {
-                self.game.turn = (self.game.turn + 1) % 4;
-                self.game.round += 1;
-                self.game.roll_dice();
+                if !self.game.current_is_ai() {
+                    self.game.pass_turn();
+                }
+            }
+            Message::TickAi => {
+                if self.game.current_is_ai() {
+                    self.game.step_ai();
+                }
             }
         }
-        Task::none()
+        self.check_ai_step()
     }
 
     fn player_button<'a>(
@@ -259,14 +307,15 @@ impl App {
             .font(LEXEND)
             .color(Color::WHITE);
 
-        let turn_text = text_widget(if let Some(winner) = self.game.winner {
+        let turn_label = if let Some(winner) = self.game.winner {
             format!("Winner: Player {}!", winner)
+        } else if self.game.current_is_ai() {
+            format!("Turn: Player {} ({}) [AI]", self.game.turn, p_name)
         } else {
             format!("Turn: Player {} ({})", self.game.turn, p_name)
-        })
-        .size(22)
-        .font(LEXEND)
-        .color(p_color);
+        };
+
+        let turn_text = text_widget(turn_label).size(22).font(LEXEND).color(p_color);
 
         let dice_text = text_widget(format!("Dice Roll: {}", self.game.roll))
             .size(20)
@@ -274,7 +323,13 @@ impl App {
             .color(Color::WHITE);
 
         let mut options_column = Column::new().spacing(10);
-        if self.game.options.is_empty() {
+        if self.game.current_is_ai() {
+            options_column = options_column.push(
+                text_widget("AI is thinking...")
+                    .font(LEXEND)
+                    .color(Color::from_rgb(0.7, 0.7, 0.7)),
+            );
+        } else if self.game.options.is_empty() {
             options_column = options_column.push(self.player_button(
                 text_widget("No Valid Moves - Pass").font(LEXEND),
                 Message::PassTurn,
